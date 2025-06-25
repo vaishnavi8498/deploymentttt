@@ -1,0 +1,57 @@
+name: Deploy
+
+run-name: Deploy to ${{ inputs.environment }} environment by @${{ github.actor }}
+
+permissions:
+  contents: read
+  id-token: write
+
+on:
+  push:
+    branches:
+      - 'main'
+  workflow_dispatch:
+    inputs:
+      environment:
+        description: 'Select the environment to be deployed'
+        required: true
+        type: string
+      apply_changes:
+        description: 'Check this box to apply changes'
+        required: false
+        type: boolean
+      stage_testing:
+        description: 'Check this box to deploy for stage testing'
+        required: false
+        type: boolean
+      solution_file:
+        description: 'Solution file to deploy'
+        required: false
+        type: string
+
+env:
+  ENVIRONMENT: ${{ inputs.environment || 'dev' }}
+  APPLY_CHANGES: ${{ inputs.apply_changes || true }}
+
+jobs:
+  display-input-values:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Display job parameters
+        run: |
+          echo "Job parameters"
+          echo "Environment: ${{ env.ENVIRONMENT }}"
+          echo "Apply changes: ${{ env.APPLY_CHANGES }}"
+          echo "Stage testing: ${{ inputs.stage_testing }}"
+
+  call-deploy-dotnet:
+    uses: OptumInsight-Analytics/p2020-workflows/.github/workflows/deploy-dotnet.yml@v1
+    with:
+      environment: ${{ inputs.environment }}
+      apply_changes: ${{ inputs.apply_changes }}
+      solution_file: "Unified Person Index.sln"
+    secrets: inherit
+
+    # Optional custom script execution after deploy (PowerShell)
+    - run: |
+        powershell -command "./sonar.ps1 -Environment ${{ inputs.environment }} -StageTestingEnabled ${{ inputs.stage_testing }}"
