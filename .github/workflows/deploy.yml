@@ -1,0 +1,141 @@
+name: Deploy CMA-UPI Pipeline
+
+on:
+  push:
+    branches:
+      - main
+  workflow_dispatch:
+    inputs:
+      environment:
+        description: 'Target environment (dev, stage)'
+        required: false
+        type: string
+      apply_changes:
+        description: 'Apply changes'
+        required: false
+        type: boolean
+
+env:
+  ENVIRONMENT: ${{ inputs.environment || 'dev' }}
+  APPLY_CHANGES: ${{ inputs.apply_changes || true }}
+
+jobs:
+  deploy-dev:
+    if: ${{ env.ENVIRONMENT == 'dev' }}
+    runs-on: windows-latest
+    env:
+      RDS_HOST: dev-db-host.example.com
+      AWS_ROLE: arn:aws:iam::111122223333:role/dev-role
+      ARTIFACTS_BUCKET: 111122223333-p2020-source-dev
+    steps:
+      - name: Checkout Code
+        uses: actions/checkout@v3
+
+      - name: Build Solution
+        run: |
+          nuget restore 'Unified Person Index.sln' -Source "https://repo1.uhc.com/artifactory/api/nuget/nuget-gallery"
+          msbuild 'Unified Person Index.sln' /t:Rebuild /p:Configuration=Release
+        shell: pwsh
+
+      - name: SonarQube Scan
+        env:
+          SONAR_LOGIN: ${{ secrets.SONAR_LOGIN }}
+        run: |
+          ./sonar.ps1 `
+            -SONAR_URL "https://sonarqube.url" `
+            -SONAR_PROJECT "com.optum.P2020:cma-upi" `
+            -SONAR_LOGIN "${{ env.SONAR_LOGIN }}" `
+            -BRANCH_NAME "${{ github.ref_name }}" `
+            -BUILDNUMBER "${{ github.run_id }}"
+        shell: pwsh
+
+      - name: Modify PowerShell Scripts
+        run: |
+          (Get-Content Scripts/installServices.ps1).replace('-DBServer "."', '-DBServer "${{ env.RDS_HOST }}"') | Set-Content Scripts/installServices.ps1
+          (Get-Content Scripts/installServices.ps1).replace('-Environment "."', '-Environment "${{ env.ENVIRONMENT }}"') | Set-Content Scripts/installServices.ps1
+        shell: pwsh
+
+      - name: Zip Artifacts
+        run: |
+          Compress-Archive -Path 'Services/' -DestinationPath 'UPIService.zip'
+          Compress-Archive -Path 'QueueProcessor/bin/Release/', 'appspec.yml', 'Scripts/', 'UPIService.zip' -DestinationPath 'upi.zip'
+        shell: pwsh
+
+      - name: Upload to S3
+        uses: jakejarvis/s3-sync-action@master
+        with:
+          args: --acl private
+        env:
+          AWS_S3_BUCKET: ${{ env.ARTIFACTS_BUCKET }}
+          AWS_ACCESS_KEY_ID: ${{ secrets.AWS_ACCESS_KEY_ID }}
+          AWS_SECRET_ACCESS_KEY: ${{ secrets.AWS_SECRET_ACCESS_KEY }}
+          AWS_REGION: us-east-1
+          SOURCE_DIR: '.'
+          DEST_DIR: 'upi'
+
+      - name: Deploy using CodeDeploy
+        run: |
+          ./deploy.ps1 `
+            -S3Bucket "${{ env.ARTIFACTS_BUCKET }}" `
+            -S3Key "upi" `
+            -Artifact "upi" `
+            -CodeDeployAppName "p2020-cma-loaders-${{ env.ENVIRONMENT }}" `
+            -CodeDeployDeploymentGroup "p2020-cma-loaders-upi-services-deployment-group-${{ env.ENVIRONMENT }}"
+        shell: pwsh
+
+  deploy-stage:
+    if: ${{ env.ENVIRONMENT == 'stage' }}
+    runs-on: windows-latest
+    env:
+      RDS_HOST: p2020-rds-stage-1.internal.marketadvantage.optum.com
+      AWS_ROLE: arn:aws:iam::660577232581:role/AWS_660577232581_Automation
+      ARTIFACTS_BUCKET: 660577232581-p2020-source-stage
+    steps:
+      - name: Checkout Code
+        uses: actions/checkout@v3
+
+      - name: SonarQube Scan
+        env:
+          SONAR_LOGIN: ${{ secrets.SONAR_LOGIN }}
+        run: |
+          ./sonar.ps1 `
+            -SONAR_URL "https://sonarqube.url" `
+            -SONAR_PROJECT "com.optum.P2020:cma-upi" `
+            -SONAR_LOGIN "${{ env.SONAR_LOGIN }}" `
+            -BRANCH_NAME "${{ github.ref_name }}" `
+            -BUILDNUMBER "${{ github.run_id }}"
+        shell: pwsh
+
+      - name: Modify PowerShell Scripts
+        run: |
+          (Get-Content Scripts/installServices.ps1).replace('-DBServer "."', '-DBServer "${{ env.RDS_HOST }}"') | Set-Content Scripts/installServices.ps1
+          (Get-Content Scripts/installServices.ps1).replace('-Environment "."', '-Environment "${{ env.ENVIRONMENT }}"') | Set-Content Scripts/installServices.ps1
+        shell: pwsh
+
+      - name: Zip Artifacts
+        run: |
+          Compress-Archive -Path 'Services/' -DestinationPath 'UPIService.zip'
+          Compress-Archive -Path 'QueueProcessor/bin/Release/', 'appspec.yml', 'Scripts/', 'UPIService.zip' -DestinationPath 'upi.zip'
+        shell: pwsh
+
+      - name: Upload to S3
+        uses: jakejarvis/s3-sync-action@master
+        with:
+          args: --acl private
+        env:
+          AWS_S3_BUCKET: ${{ env.ARTIFACTS_BUCKET }}
+          AWS_ACCESS_KEY_ID: ${{ secrets.AWS_ACCESS_KEY_ID }}
+          AWS_SECRET_ACCESS_KEY: ${{ secrets.AWS_SECRET_ACCESS_KEY }}
+          AWS_REGION: us-east-1
+          SOURCE_DIR: '.'
+          DEST_DIR: 'upi'
+
+      - name: Deploy using CodeDeploy
+        run: |
+          ./deploy.ps1 `
+            -S3Bucket "${{ env.ARTIFACTS_BUCKET }}" `
+            -S3Key "upi" `
+            -Artifact "upi" `
+            -CodeDeployAppName "p2020-cma-loaders-${{ env.ENVIRONMENT }}" `
+            -CodeDeployDeploymentGroup "p2020-cma-loaders-upi-services-deployment-group-${{ env.ENVIRONMENT }}"
+        shell: pwsh
